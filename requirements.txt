@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+sqlalchemy
+asyncpg
+alembic
+pydantic[email]
+pytest
+pytest-asyncio
+httpx
+redis[asyncio]
+python-jose[cryptography]
+passlib==1.7.4
+bcrypt==4.0.1
+email-validator
+aiosqlite
+python-multipart
+slowapi
