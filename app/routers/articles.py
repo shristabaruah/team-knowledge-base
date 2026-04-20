@@ -10,6 +10,7 @@ from app.schemas import ArticleCreate, ArticleUpdate, ArticleResponse
 from app.dependencies import get_current_user
 from app.redis import get_redis
 import redis.asyncio as aioredis
+from sqlalchemy.orm import selectinload
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -48,7 +49,9 @@ async def list_articles(
     if cached:
         return json.loads(cached)
 
-    query = select(Article).where(Article.status == ArticleStatus.PUBLISHED)
+    query = select(Article)\
+        .options(selectinload(Article.tags), selectinload(Article.author))\
+        .where(Article.status == ArticleStatus.PUBLISHED)
     if tag:
         query = query.join(Article.tags).where(Tag.slug == tag)
     query = query.offset(skip).limit(limit)
@@ -61,20 +64,23 @@ async def list_articles(
 
     return articles
 
-# GET ONE ARTICLE BY SLUG — public, cached
+# GET MY DRAFTS — authenticated
 @router.get("/my/drafts", response_model=list[ArticleResponse])
 async def my_drafts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     result = await db.execute(
-        select(Article).where(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(
             Article.author_id == current_user.id,
             Article.status == ArticleStatus.DRAFT
         )
     )
     return result.scalars().all()
 
+# GET ONE ARTICLE BY SLUG — public, cached
 @router.get("/{slug}", response_model=ArticleResponse)
 async def get_article(
     slug: str,
@@ -87,7 +93,9 @@ async def get_article(
         return json.loads(cached)
 
     result = await db.execute(
-        select(Article).where(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(
             Article.slug == slug,
             Article.status == ArticleStatus.PUBLISHED
         )
@@ -99,7 +107,13 @@ async def get_article(
     # Increment view count
     article.view_count += 1
     await db.commit()
-    await db.refresh(article)
+
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.id == article.id)
+    )
+    article = result.scalar_one()
 
     article_data = ArticleResponse.model_validate(article).model_dump(mode="json")
     await redis.set(cache_key, json.dumps(article_data), ex=600)
@@ -140,7 +154,14 @@ async def create_article(
     article.tags = tags
     db.add(article)
     await db.commit()
-    await db.refresh(article)
+
+    # Reload with relationships
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.id == article.id)
+    )
+    article = result.scalar_one()
 
     # Invalidate cache
     await invalidate_article_cache(redis)
@@ -156,7 +177,11 @@ async def update_article(
     current_user: User = Depends(get_current_user),
     redis: aioredis.Redis = Depends(get_redis)
 ):
-    result = await db.execute(select(Article).where(Article.slug == slug))
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.slug == slug)
+    )
     article = result.scalar_one_or_none()
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -177,7 +202,14 @@ async def update_article(
         setattr(article, key, value)
 
     await db.commit()
-    await db.refresh(article)
+
+    # Reload with relationships
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.slug == slug)
+    )
+    article = result.scalar_one()
 
     # Invalidate cache
     await invalidate_article_cache(redis)

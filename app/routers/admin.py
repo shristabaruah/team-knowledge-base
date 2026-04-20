@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import User, Article
 from app.schemas import UserResponse, RoleUpdate, ArticleResponse
@@ -40,7 +41,11 @@ async def toggle_feature(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin)
 ):
-    result = await db.execute(select(Article).where(Article.slug == slug))
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.slug == slug)
+    )
     article = result.scalar_one_or_none()
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -49,4 +54,13 @@ async def toggle_feature(
     article.is_featured = not article.is_featured
     await db.commit()
     await db.refresh(article)
+
+    # Reload with relationships
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.tags), selectinload(Article.author))
+        .where(Article.slug == slug)
+    )
+    article = result.scalar_one()
+
     return article

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import Comment, Article, User, UserRole, ArticleStatus
 from app.schemas import CommentCreate, CommentResponse
@@ -19,7 +20,6 @@ async def add_comment(
     current_user: User = Depends(get_current_user),
     redis: aioredis.Redis = Depends(get_redis)
 ):
-    # Get article
     result = await db.execute(
         select(Article).where(
             Article.slug == slug,
@@ -30,7 +30,6 @@ async def add_comment(
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    # Validate parent comment if reply
     if data.parent_id:
         parent_result = await db.execute(
             select(Comment).where(Comment.id == data.parent_id)
@@ -39,10 +38,7 @@ async def add_comment(
         if not parent:
             raise HTTPException(status_code=404, detail="Parent comment not found")
         if parent.parent_id is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="Replies to replies are not allowed"
-            )
+            raise HTTPException(status_code=400, detail="Replies to replies are not allowed")
 
     comment = Comment(
         content=data.content,
@@ -52,7 +48,17 @@ async def add_comment(
     )
     db.add(comment)
     await db.commit()
-    await db.refresh(comment)
+
+    # Reload with relationships
+    result = await db.execute(
+        select(Comment)
+        .options(
+            selectinload(Comment.author),
+            selectinload(Comment.replies).selectinload(Comment.author)
+        )
+        .where(Comment.id == comment.id)
+    )
+    comment = result.scalar_one()
 
     # Invalidate article detail cache
     await redis.delete(f"articles:detail:{slug}")
@@ -65,15 +71,18 @@ async def list_comments(
     slug: str,
     db: AsyncSession = Depends(get_db)
 ):
-    # Get article
     result = await db.execute(select(Article).where(Article.slug == slug))
     article = result.scalar_one_or_none()
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    # Get top level comments only
     result = await db.execute(
-        select(Comment).where(
+        select(Comment)
+        .options(
+            selectinload(Comment.author),
+            selectinload(Comment.replies).selectinload(Comment.author)
+        )
+        .where(
             Comment.article_id == article.id,
             Comment.parent_id == None
         )

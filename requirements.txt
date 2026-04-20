@@ -15,3 +15,4 @@ email-validator
 aiosqlite
 python-multipart
 slowapi
+pydantic-settings
